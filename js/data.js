@@ -3,7 +3,8 @@
 
 import { DEFAULT_CATALOG } from './catalog-defaults.js';
 
-const STORAGE_KEY = 'otb_orders_v1';
+const STORAGE_KEY  = 'otb_orders_v1';
+const DATA_VERSION = 2;
 
 // ── Core storage helpers ───────────────────────────────────────────────────
 
@@ -11,9 +12,7 @@ export function getData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return _bootstrap();
-    const parsed = JSON.parse(raw);
-    // Migrate if needed
-    return _ensureShape(parsed);
+    return _ensureShape(JSON.parse(raw));
   } catch {
     return _bootstrap();
   }
@@ -25,7 +24,7 @@ export function setData(data) {
 
 function _bootstrap() {
   const data = {
-    version: 1,
+    version: DATA_VERSION,
     catalog: JSON.parse(JSON.stringify(DEFAULT_CATALOG)),
     orders: [],
     meta: { lastExportAt: null },
@@ -34,23 +33,40 @@ function _bootstrap() {
   return data;
 }
 
-// Ensure any missing top-level keys exist (forward-compat with older saves)
 function _ensureShape(data) {
   if (!data.catalog) data.catalog = JSON.parse(JSON.stringify(DEFAULT_CATALOG));
-  if (!data.orders) data.orders = [];
-  if (!data.meta) data.meta = { lastExportAt: null };
-  // Ensure all catalog items have alwaysOn + archived fields
+  if (!data.orders)  data.orders  = [];
+  if (!data.meta)    data.meta    = { lastExportAt: null };
+
+  const v = data.version || 1;
+
   ['cfs', 'fish', 'veggies'].forEach(sup => {
     if (!data.catalog[sup]) data.catalog[sup] = [];
     data.catalog[sup].forEach(item => {
-      // Migrate from old boolean alwaysOn to the new 3-state tracking field
-      if (item.tracking === undefined) {
-        item.tracking = item.alwaysOn ? 'silent' : 'track';
+
+      if (v < 2) {
+        // ── v1 → v2 migration ─────────────────────────────────────────────
+        // Old field was `tracking` ('track'|'must'|'silent') or `alwaysOn` bool
+        const old = item.tracking ?? (item.alwaysOn ? 'silent' : undefined);
+        if      (old === 'silent' || old === 'alwaysOn') item.mode = 'mustHave';
+        else if (old === 'must'   || old === 'mustHave') item.mode = 'mustHave';
+        else if (old === 'track')                        item.mode = 'track';
+        else                                             item.mode = 'off';
+        delete item.tracking;
+        delete item.alwaysOn;
       }
-      delete item.alwaysOn; // remove legacy field
+
+      // Guarantee required fields exist on all items
+      if (!item.mode)              item.mode     = 'off';
       if (item.archived === undefined) item.archived = false;
     });
   });
+
+  if (v < DATA_VERSION) {
+    data.version = DATA_VERSION;
+    setData(data); // persist the migration immediately
+  }
+
   return data;
 }
 

@@ -1,7 +1,7 @@
 // New Order screen — select supplier, fill quantities, save
 
 import { getCatalogItems, getOrders, addOrder, getCatalog, updateCatalog } from '../data.js';
-import { generateId, todayISO, supplierLabel, getItemInfo, vibrate, showToast, formatOrderText, TRACKING_META, STREAK_WARN_AT, SKIP_WARN_TRACK, SKIP_WARN_MUST } from '../utils.js';
+import { generateId, todayISO, supplierLabel, getItemInfo, vibrate, showToast, formatOrderText } from '../utils.js';
 
 let _controller = null; // AbortController — prevents duplicate listeners on re-render
 
@@ -127,35 +127,28 @@ export function render(container) {
 function _itemCard(item, allOrders) {
   const info = getItemInfo(item.id, item.name, allOrders);
   const qty  = _state.quantities[item.id] ?? '';
-  const isVeggies = _state.supplier === 'veggies';
-
-  const mode = item.tracking || 'track';
+  const mode = item.mode || 'off';
   let badges = '';
 
-  if (!isVeggies) {
-    if (mode === 'silent') {
-      // Always On — no warnings, just show the icon
-      badges += `<span class="badge badge-miss" title="${TRACKING_META.silent.desc}">${TRACKING_META.silent.icon}</span>`;
+  if (mode === 'mustHave') {
+    // Always show 📌 icon; add red "Missed last week" if not in most recent order
+    badges += `<span class="badge badge-pin">📌</span>`;
+    if (info.streak === 0 && info.weeksMissed >= 1) {
+      badges += `<span class="badge badge-danger">Missed last week</span>`;
+    }
 
-    } else if (mode === 'must') {
-      // Must Have — skip alert only (at 5 weeks), no streak warning
-      badges += `<span class="badge badge-pin" title="${TRACKING_META.must.desc}">${TRACKING_META.must.icon}</span>`;
-      if (info.weeksMissed >= SKIP_WARN_MUST) {
-        badges += `<span class="badge badge-warn">Not ordered ${info.weeksMissed}w ⚠</span>`;
-      }
-
-    } else {
-      // track (default) — streak + skip warnings
-      if (info.streak >= STREAK_WARN_AT) {
-        badges += `<span class="badge badge-warn">${info.streak} weeks ⚠</span>`;
-      } else if (info.streak >= 1) {
-        badges += `<span class="badge badge-ok">Last week ✓</span>`;
-      }
-      if (info.weeksMissed >= SKIP_WARN_TRACK) {
-        badges += `<span class="badge badge-miss">Not ordered ${info.weeksMissed}w</span>`;
-      }
+  } else if (mode === 'track') {
+    // Show 🔔 icon; streak badges are dynamic (see input handler)
+    badges += `<span class="badge badge-track">🔔</span>`;
+    if (info.streak >= 2) {
+      // Already 2+ in a row — always show orange, no need to be dynamic
+      badges += `<span class="badge badge-warn">${info.streak} in a row</span>`;
+    } else if (info.streak === 1) {
+      // Ordered last week — badge upgrades to orange once user enters a qty
+      badges += `<span class="badge badge-ok" data-streak-badge data-streak-value="1">Last week ✓</span>`;
     }
   }
+  // mode === 'off': no badges
 
   return `
     <div class="card ${qty ? 'ring-1 ring-brand' : ''}">
@@ -338,8 +331,21 @@ function _attachEvents(container) {
       _state.quantities[el.dataset.itemId] = el.value;
       const card = el.closest('.card');
       if (card) {
-        card.classList.toggle('ring-1', !!el.value.trim());
-        card.classList.toggle('ring-brand', !!el.value.trim());
+        const filled = !!el.value.trim();
+        card.classList.toggle('ring-1',     filled);
+        card.classList.toggle('ring-brand', filled);
+
+        // For Track items ordered last week (streak=1), upgrade badge once qty entered
+        const streakBadge = card.querySelector('[data-streak-badge]');
+        if (streakBadge && streakBadge.dataset.streakValue === '1') {
+          if (filled) {
+            streakBadge.className   = 'badge badge-warn';
+            streakBadge.textContent = '⚠ 2 in a row';
+          } else {
+            streakBadge.className   = 'badge badge-ok';
+            streakBadge.textContent = 'Last week ✓';
+          }
+        }
       }
     }
     if (el.dataset.action === 'ci-qty-input') {
