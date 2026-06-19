@@ -43,7 +43,11 @@ function _ensureShape(data) {
   ['cfs', 'fish', 'veggies'].forEach(sup => {
     if (!data.catalog[sup]) data.catalog[sup] = [];
     data.catalog[sup].forEach(item => {
-      if (item.alwaysOn === undefined) item.alwaysOn = false;
+      // Migrate from old boolean alwaysOn to the new 3-state tracking field
+      if (item.tracking === undefined) {
+        item.tracking = item.alwaysOn ? 'silent' : 'track';
+      }
+      delete item.alwaysOn; // remove legacy field
       if (item.archived === undefined) item.archived = false;
     });
   });

@@ -1,10 +1,12 @@
-// Catalog management screen — add/edit/remove items, set min qty, always-on toggle
+// Catalog management screen — add/edit/remove items, tracking mode, min qty
+// Crash fix: AbortController ensures only one click listener exists at a time.
 
 import { getCatalog, updateCatalog } from '../data.js';
-import { generateId, supplierLabel, vibrate, showToast, showConfirm } from '../utils.js';
+import { generateId, supplierLabel, vibrate, showToast, showConfirm, TRACKING_MODES, TRACKING_META } from '../utils.js';
 
-let _supplier = 'cfs';
-let _editingId = null; // id of item being edited inline
+let _supplier  = 'cfs';
+let _editingId = null;
+let _controller = null; // AbortController — cancelled on every re-render to avoid stacked listeners
 
 export function init() {}
 
@@ -13,7 +15,7 @@ export function render(container) {
   const items   = (catalog[_supplier] || []).filter(i => !i.archived);
 
   container.innerHTML = `
-    <!-- Quick link to Backup screen -->
+    <!-- Quick link to Backup -->
     <div class="px-4 pt-4">
       <button data-action="go-backup"
         class="w-full py-3 bg-surface border border-border rounded-xl text-sm font-semibold flex items-center justify-center gap-2 text-muted">
@@ -34,9 +36,22 @@ export function render(container) {
       `).join('')}
     </div>
 
+    <!-- Legend for tracking modes -->
+    <div class="mx-4 mt-3 p-3 rounded-xl bg-surface border border-border space-y-1">
+      <p class="text-xs font-semibold text-muted uppercase tracking-wide mb-1.5">Tracking modes</p>
+      ${TRACKING_MODES.map(m => `
+        <div class="flex items-center gap-2 text-xs">
+          <span class="text-base w-5">${TRACKING_META[m].icon}</span>
+          <span class="font-semibold">${TRACKING_META[m].label}</span>
+          <span class="text-muted">— ${TRACKING_META[m].desc}</span>
+        </div>
+      `).join('')}
+      <p class="text-xs text-muted pt-1">Tap the icon on any item to cycle through modes.</p>
+    </div>
+
     <!-- Item count -->
     <div class="px-4 pt-3 pb-1">
-      <p class="text-xs text-muted">${items.length} items in catalog</p>
+      <p class="text-xs text-muted">${items.length} items in ${supplierLabel(_supplier)} catalog</p>
     </div>
 
     <!-- Item list -->
@@ -50,8 +65,7 @@ export function render(container) {
           autocomplete="off" autocorrect="off" autocapitalize="words">
         <input id="new-minqty" type="text" placeholder="Min qty (e.g. 3, 1 bag, as needed)" class="input-field"
           autocomplete="off" autocorrect="off" autocapitalize="off">
-        <button data-action="add-item"
-          class="w-full py-3 bg-brand text-white rounded-xl font-semibold text-sm">
+        <button data-action="add-item" class="w-full py-3 bg-brand text-white rounded-xl font-semibold text-sm">
           + Add item
         </button>
       </div>
@@ -61,17 +75,21 @@ export function render(container) {
   _attachEvents(container);
 }
 
+// ── Item row ───────────────────────────────────────────────────────────────
+
 function _itemRow(item) {
   const isEditing = _editingId === item.id;
+  const mode = item.tracking || 'track';
+  const meta = TRACKING_META[mode];
 
   if (isEditing) {
     return `
       <div class="card ring-1 ring-brand space-y-2" data-item-id="${item.id}">
-        <p class="text-xs font-semibold text-muted uppercase">Editing</p>
-        <input id="edit-name-${item.id}" type="text" value="${escHtml(item.name)}"
+        <p class="text-xs font-semibold text-muted uppercase tracking-wide">Editing item</p>
+        <input id="edit-name-${escId(item.id)}" type="text" value="${escHtml(item.name)}"
           class="input-field" autocomplete="off" autocorrect="off" autocapitalize="words">
-        <input id="edit-minqty-${item.id}" type="text" value="${escHtml(item.minQty || '')}"
-          placeholder="Min qty" class="input-field"
+        <input id="edit-minqty-${escId(item.id)}" type="text" value="${escHtml(item.minQty || '')}"
+          placeholder="Min qty (e.g. 3, 1 bag, as needed)" class="input-field"
           autocomplete="off" autocorrect="off" autocapitalize="off">
         <div class="flex gap-2">
           <button data-action="save-edit" data-item-id="${item.id}"
@@ -83,44 +101,60 @@ function _itemRow(item) {
     `;
   }
 
+  // Tracking mode button cycles track → must → silent → track
+  const nextMode = TRACKING_MODES[(TRACKING_MODES.indexOf(mode) + 1) % TRACKING_MODES.length];
+
   return `
     <div class="card" data-item-id="${item.id}">
       <div class="flex items-center gap-3">
-        <!-- Always-on toggle -->
+
+        <!-- Tracking mode cycle button -->
         <button
-          data-action="toggle-always-on"
+          data-action="cycle-tracking"
           data-item-id="${item.id}"
-          class="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-xl
-            ${item.alwaysOn
-              ? 'bg-amber-100 dark:bg-amber-900 border border-amber-300 dark:border-amber-700'
-              : 'bg-surface border border-border text-muted'}"
-          title="${item.alwaysOn ? 'Always-on (tap to disable)' : 'Mark as always-on'}"
-        >${item.alwaysOn ? '📌' : '☆'}</button>
+          data-next-mode="${nextMode}"
+          title="${meta.label}: ${meta.desc} — tap to change"
+          class="shrink-0 flex flex-col items-center justify-center w-12 h-12 rounded-xl border text-center
+            ${mode === 'track'  ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800' : ''}
+            ${mode === 'must'   ? 'bg-amber-50 dark:bg-amber-950 border-amber-200 dark:border-amber-700' : ''}
+            ${mode === 'silent' ? 'bg-surface border-border' : ''}
+          ">
+          <span class="text-xl leading-none">${meta.icon}</span>
+          <span class="text-[9px] font-bold mt-0.5
+            ${mode === 'track'  ? 'text-blue-600 dark:text-blue-400' : ''}
+            ${mode === 'must'   ? 'text-amber-700 dark:text-amber-400' : ''}
+            ${mode === 'silent' ? 'text-muted' : ''}
+          ">${meta.label}</span>
+        </button>
 
         <!-- Name + min qty -->
         <div class="flex-1 min-w-0">
           <p class="font-medium text-sm leading-snug">${escHtml(item.name)}</p>
-          ${item.minQty ? `<p class="text-xs text-muted">min: ${escHtml(item.minQty)}</p>` : ''}
+          <p class="text-xs text-muted">${item.minQty ? `min: ${escHtml(item.minQty)}` : 'no min set'}</p>
         </div>
 
         <!-- Edit + Delete -->
         <div class="flex gap-1 shrink-0">
           <button data-action="edit-item" data-item-id="${item.id}"
-            class="w-10 h-10 flex items-center justify-center rounded-xl bg-surface border border-border text-base">
-            ✏️
-          </button>
+            class="w-11 h-11 flex items-center justify-center rounded-xl bg-surface border border-border text-lg"
+            aria-label="Edit ${escHtml(item.name)}">✏️</button>
           <button data-action="delete-item" data-item-id="${item.id}"
-            class="w-10 h-10 flex items-center justify-center rounded-xl bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 text-base">
-            🗑
-          </button>
+            class="w-11 h-11 flex items-center justify-center rounded-xl bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 text-lg"
+            aria-label="Delete ${escHtml(item.name)}">🗑</button>
         </div>
       </div>
     </div>
   `;
 }
 
+// ── Events (AbortController prevents duplicate listeners) ──────────────────
+
 function _attachEvents(container) {
-  // Supplier tabs
+  // Cancel the previous listener before adding a new one
+  if (_controller) _controller.abort();
+  _controller = new AbortController();
+  const { signal } = _controller;
+
   container.addEventListener('click', e => {
     const el = e.target.closest('[data-action]');
     if (!el) return;
@@ -132,23 +166,23 @@ function _attachEvents(container) {
     }
 
     if (action === 'switch-supplier') {
-      _supplier = el.dataset.supplier;
+      _supplier  = el.dataset.supplier;
       _editingId = null;
       render(container);
       return;
     }
 
-    if (action === 'toggle-always-on') {
-      const id = el.dataset.itemId;
+    if (action === 'cycle-tracking') {
+      const id      = el.dataset.itemId;
+      const newMode = el.dataset.nextMode;
       const catalog = getCatalog();
-      const item = catalog[_supplier].find(i => i.id === id);
-      if (item) {
-        item.alwaysOn = !item.alwaysOn;
-        updateCatalog(catalog);
-        vibrate(10);
-        showToast(item.alwaysOn ? '📌 Marked as always-on' : 'Always-on removed', 'info');
-        render(container);
-      }
+      const item    = catalog[_supplier].find(i => i.id === id);
+      if (!item) return;
+      item.tracking = newMode;
+      updateCatalog(catalog);
+      vibrate(10);
+      showToast(`${TRACKING_META[newMode].icon} ${item.name} → ${TRACKING_META[newMode].label}`, 'info');
+      render(container);
       return;
     }
 
@@ -165,9 +199,12 @@ function _attachEvents(container) {
     }
 
     if (action === 'save-edit') {
-      const id      = el.dataset.itemId;
-      const name    = container.querySelector(`#edit-name-${id}`)?.value.trim();
-      const minQty  = container.querySelector(`#edit-minqty-${id}`)?.value.trim();
+      const id     = el.dataset.itemId;
+      const safeId = escId(id);
+      const nameEl  = document.getElementById(`edit-name-${safeId}`);
+      const minEl   = document.getElementById(`edit-minqty-${safeId}`);
+      const name    = nameEl?.value.trim();
+      const minQty  = minEl?.value.trim();
       if (!name) { showToast('Item name is required', 'warning'); return; }
 
       const catalog = getCatalog();
@@ -185,13 +222,11 @@ function _attachEvents(container) {
     }
 
     if (action === 'delete-item') {
-      const id = el.dataset.itemId;
+      const id      = el.dataset.itemId;
       const catalog = getCatalog();
       const item    = catalog[_supplier].find(i => i.id === id);
       if (!item) return;
-
-      showConfirm(`Remove "${item.name}" from the catalog?`, () => {
-        // Archive rather than hard-delete to preserve history links
+      showConfirm(`Remove "${item.name}" from catalog?`, () => {
         item.archived = true;
         updateCatalog(catalog);
         vibrate([10, 50, 10]);
@@ -202,8 +237,10 @@ function _attachEvents(container) {
     }
 
     if (action === 'add-item') {
-      const name   = container.querySelector('#new-name')?.value.trim();
-      const minQty = container.querySelector('#new-minqty')?.value.trim();
+      const nameEl  = container.querySelector('#new-name');
+      const minEl   = container.querySelector('#new-minqty');
+      const name    = nameEl?.value.trim();
+      const minQty  = minEl?.value.trim();
       if (!name) { showToast('Enter an item name', 'warning'); return; }
 
       const catalog = getCatalog();
@@ -211,16 +248,26 @@ function _attachEvents(container) {
         id: generateId(),
         name,
         minQty: minQty || '',
-        alwaysOn: false,
+        tracking: 'track',
         archived: false,
       });
       updateCatalog(catalog);
       vibrate(10);
       showToast(`"${name}" added to ${supplierLabel(_supplier)}`, 'success');
+      // Clear the inputs before re-render
+      if (nameEl)  nameEl.value  = '';
+      if (minEl)   minEl.value   = '';
       render(container);
       return;
     }
-  });
+  }, { signal });
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+// Make an item ID safe to use as a CSS id selector suffix
+function escId(id) {
+  return id.replace(/[^a-z0-9]/gi, '_');
 }
 
 function escHtml(str) {

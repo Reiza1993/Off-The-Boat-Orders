@@ -3,8 +3,9 @@
 import { getOrders, deleteOrder } from '../data.js';
 import { supplierLabel, supplierColor, supplierEmoji, formatDate, formatDateLong, formatOrderText, copyText, vibrate, showToast, showConfirm } from '../utils.js';
 
-let _filter = { supplier: 'all', dateFrom: '', dateTo: '' };
-let _expanded = null; // id of currently expanded order
+let _filter     = { supplier: 'all', dateFrom: '', dateTo: '' };
+let _expanded   = null;
+let _controller = null; // AbortController — prevents duplicate listeners on re-render
 
 export function init() {}
 
@@ -120,6 +121,10 @@ function _applyFilter(orders) {
 }
 
 function _attachEvents(container) {
+  if (_controller) _controller.abort();
+  _controller = new AbortController();
+  const { signal } = _controller;
+
   // Filter controls
   container.querySelector('#filter-supplier')?.addEventListener('change', e => {
     _filter.supplier = e.target.value;

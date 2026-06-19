@@ -1,7 +1,9 @@
 // New Order screen — select supplier, fill quantities, save
 
 import { getCatalogItems, getOrders, addOrder, getCatalog, updateCatalog } from '../data.js';
-import { generateId, todayISO, supplierLabel, getItemInfo, vibrate, showToast, formatOrderText } from '../utils.js';
+import { generateId, todayISO, supplierLabel, getItemInfo, vibrate, showToast, formatOrderText, TRACKING_META, STREAK_WARN_AT, SKIP_WARN_TRACK, SKIP_WARN_MUST } from '../utils.js';
+
+let _controller = null; // AbortController — prevents duplicate listeners on re-render
 
 // State persisted while the screen is open
 let _state = {
@@ -127,18 +129,31 @@ function _itemCard(item, allOrders) {
   const qty  = _state.quantities[item.id] ?? '';
   const isVeggies = _state.supplier === 'veggies';
 
+  const mode = item.tracking || 'track';
   let badges = '';
+
   if (!isVeggies) {
-    if (item.alwaysOn) {
-      badges += `<span class="badge badge-pin" title="Always-on — streak warnings suppressed">📌</span>`;
-    }
-    if (info.streak >= 2 && !item.alwaysOn) {
-      badges += `<span class="badge badge-warn">${info.streak} weeks ⚠</span>`;
-    } else if (info.streak >= 1) {
-      badges += `<span class="badge badge-ok">Last week ✓</span>`;
-    }
-    if (info.weeksMissed >= 3) {
-      badges += `<span class="badge badge-miss">Not ordered ${info.weeksMissed}w</span>`;
+    if (mode === 'silent') {
+      // Always On — no warnings, just show the icon
+      badges += `<span class="badge badge-miss" title="${TRACKING_META.silent.desc}">${TRACKING_META.silent.icon}</span>`;
+
+    } else if (mode === 'must') {
+      // Must Have — skip alert only (at 5 weeks), no streak warning
+      badges += `<span class="badge badge-pin" title="${TRACKING_META.must.desc}">${TRACKING_META.must.icon}</span>`;
+      if (info.weeksMissed >= SKIP_WARN_MUST) {
+        badges += `<span class="badge badge-warn">Not ordered ${info.weeksMissed}w ⚠</span>`;
+      }
+
+    } else {
+      // track (default) — streak + skip warnings
+      if (info.streak >= STREAK_WARN_AT) {
+        badges += `<span class="badge badge-warn">${info.streak} weeks ⚠</span>`;
+      } else if (info.streak >= 1) {
+        badges += `<span class="badge badge-ok">Last week ✓</span>`;
+      }
+      if (info.weeksMissed >= SKIP_WARN_TRACK) {
+        badges += `<span class="badge badge-miss">Not ordered ${info.weeksMissed}w</span>`;
+      }
     }
   }
 
@@ -267,6 +282,10 @@ async function _saveAllOrders() {
 // ── Events ─────────────────────────────────────────────────────────────────
 
 function _attachEvents(container) {
+  if (_controller) _controller.abort();
+  _controller = new AbortController();
+  const { signal } = _controller;
+
   container.addEventListener('click', e => {
     const el = e.target.closest('[data-action]');
     if (!el) return;
@@ -311,7 +330,7 @@ function _attachEvents(container) {
 
   container.querySelector('#order-date')?.addEventListener('change', e => {
     _state.date = e.target.value;
-  });
+  }, { signal });
 
   container.addEventListener('input', e => {
     const el = e.target;
@@ -327,7 +346,7 @@ function _attachEvents(container) {
       const ci = _state.customItems.find(c => c.id === el.dataset.ciId);
       if (ci) ci.quantity = el.value;
     }
-  });
+  }, { signal });
 }
 
 function _copyLastOrder() {

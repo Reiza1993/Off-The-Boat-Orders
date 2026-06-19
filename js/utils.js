@@ -66,6 +66,20 @@ export function formatOrderText(order) {
   return lines.join('\n');
 }
 
+// ── Tracking mode constants ────────────────────────────────────────────────
+// 'track'  🔔 — streak warn at ≥2 consecutive orders + skip warn at ≥3 weeks absent
+// 'must'   📌 — skip warn only, at ≥5 weeks absent (essential staple, no streak warn)
+// 'silent' 🔇 — always ordered every week; no warnings of any kind
+export const TRACKING_MODES = ['track', 'must', 'silent'];
+export const TRACKING_META = {
+  track:  { icon: '🔔', label: 'Track',     desc: 'Warn if ordered 2+ weeks in a row' },
+  must:   { icon: '📌', label: 'Must Have', desc: 'Alert if not ordered in 5+ weeks' },
+  silent: { icon: '🔇', label: 'Always On', desc: 'Ordered every week — no warnings' },
+};
+export const STREAK_WARN_AT  = 2;   // consecutive orders to trigger streak warning
+export const SKIP_WARN_TRACK = 3;   // weeks absent before skip alert in 'track' mode
+export const SKIP_WARN_MUST  = 5;   // weeks absent before skip alert in 'must' mode
+
 // ── Streak / badge logic ───────────────────────────────────────────────────
 
 // Given all orders for a supplier (sorted newest-first) and one item,
