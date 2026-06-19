@@ -13,8 +13,16 @@ export function render(container) {
   const items   = (catalog[_supplier] || []).filter(i => !i.archived);
 
   container.innerHTML = `
+    <!-- Quick link to Backup screen -->
+    <div class="px-4 pt-4">
+      <button data-action="go-backup"
+        class="w-full py-3 bg-surface border border-border rounded-xl text-sm font-semibold flex items-center justify-center gap-2 text-muted">
+        💾 Backup &amp; Restore
+      </button>
+    </div>
+
     <!-- Supplier tabs -->
-    <div class="flex gap-2 p-4 pb-0">
+    <div class="flex gap-2 px-4 pt-3 pb-0">
       ${['cfs','fish','veggies'].map(s => `
         <button data-action="switch-supplier" data-supplier="${s}"
           class="flex-1 py-3 rounded-xl font-semibold text-sm transition-all
@@ -117,6 +125,11 @@ function _attachEvents(container) {
     const el = e.target.closest('[data-action]');
     if (!el) return;
     const action = el.dataset.action;
+
+    if (action === 'go-backup') {
+      window.dispatchEvent(new CustomEvent('navigate', { detail: { screen: 'backup' } }));
+      return;
+    }
 
     if (action === 'switch-supplier') {
       _supplier = el.dataset.supplier;
