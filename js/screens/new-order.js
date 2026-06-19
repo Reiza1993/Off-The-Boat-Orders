@@ -1,45 +1,47 @@
 // New Order screen — select supplier, fill quantities, save
 
 import { getCatalogItems, getOrders, addOrder, getCatalog, updateCatalog } from '../data.js';
-import { generateId, todayISO, supplierLabel, getItemInfo, vibrate, showToast } from '../utils.js';
+import { generateId, todayISO, supplierLabel, getItemInfo, vibrate, showToast, formatOrderText } from '../utils.js';
 
 // State persisted while the screen is open
 let _state = {
   supplier: 'cfs',
   date: todayISO(),
-  quantities: {},   // itemId → quantity string
-  customItems: [],  // [{ id, name, quantity, addToCatalog }]
+  // quantities keyed by itemId — persists across tab switches since IDs don't overlap
+  quantities: {},
+  // custom items tagged with the supplier they were added under
+  customItems: [], // [{ id, name, quantity, addToCatalog, supplier }]
 };
 
 export function init() {
   _state.date = todayISO();
-  // Don't reset supplier/quantities between navigations so partial orders persist
+  // quantities & customItems intentionally survive tab switches so partial orders persist
 }
 
 export function render(container) {
-  container.innerHTML = _buildHTML();
-  _attachEvents(container);
-}
-
-// ── HTML ───────────────────────────────────────────────────────────────────
-
-function _buildHTML() {
-  const items    = getCatalogItems(_state.supplier);
+  const items     = getCatalogItems(_state.supplier);
   const allOrders = getOrders(_state.supplier);
+  // Only show custom items belonging to the active supplier tab
+  const customItems = _state.customItems.filter(ci => ci.supplier === _state.supplier);
 
-  return `
+  container.innerHTML = `
     <!-- Supplier tabs -->
     <div class="flex gap-2 p-4 pb-0">
-      ${['cfs','fish','veggies'].map(s => `
+      ${['cfs','fish','veggies'].map(s => {
+        // Show a dot indicator if that supplier tab has any filled quantities
+        const hasFill = _hasAnyFilledForSupplier(s);
+        return `
         <button
           data-action="switch-supplier"
           data-supplier="${s}"
-          class="supplier-tab flex-1 py-3 rounded-xl font-semibold text-sm transition-all
+          class="supplier-tab relative flex-1 py-3 rounded-xl font-semibold text-sm transition-all
             ${_state.supplier === s
               ? 'bg-brand text-white shadow-md'
-              : 'bg-surface text-muted border border-border'}"
-        >${supplierLabel(s)}</button>
-      `).join('')}
+              : 'bg-surface text-muted border border-border'}">
+          ${supplierLabel(s)}
+          ${hasFill && _state.supplier !== s ? `<span class="absolute top-1 right-1 w-2 h-2 rounded-full bg-green-400"></span>` : ''}
+        </button>
+      `}).join('')}
     </div>
 
     <!-- Date + Copy last order -->
@@ -65,11 +67,11 @@ function _buildHTML() {
       ${items.map(item => _itemCard(item, allOrders)).join('')}
     </div>
 
-    <!-- Custom items -->
-    ${_state.customItems.length ? `
+    <!-- Custom items for this supplier -->
+    ${customItems.length ? `
       <div class="px-4 pt-2 space-y-2">
         <p class="text-xs font-semibold text-muted uppercase tracking-wide">Custom items</p>
-        ${_state.customItems.map(ci => _customItemCard(ci)).join('')}
+        ${customItems.map(ci => _customItemCard(ci)).join('')}
       </div>
     ` : ''}
 
@@ -84,7 +86,7 @@ function _buildHTML() {
     <!-- Add custom item form (hidden by default) -->
     <div id="custom-item-form" class="hidden px-4 pb-4">
       <div class="card space-y-3">
-        <p class="font-semibold text-sm">New custom item</p>
+        <p class="font-semibold text-sm">New custom item for ${supplierLabel(_state.supplier)}</p>
         <input id="ci-name" type="text" placeholder="Item name" class="input-field"
           autocomplete="off" autocorrect="off" autocapitalize="words">
         <input id="ci-qty" type="text" placeholder="Quantity (e.g. 2 boxes)" class="input-field"
@@ -100,26 +102,35 @@ function _buildHTML() {
       </div>
     </div>
 
-    <!-- Save order (sticky bottom) -->
-    <div class="sticky-bottom-action">
+    <!-- Bottom action buttons (sticky) -->
+    <div class="sticky-bottom-action space-y-2">
+      <!-- Primary: Save all non-empty supplier tabs + copy combined text -->
+      <button data-action="save-all"
+        class="w-full py-4 bg-brand text-white rounded-2xl font-bold text-base shadow-lg active:opacity-80 flex items-center justify-center gap-2">
+        💾 Save All &amp; Copy to Clipboard
+      </button>
+      <!-- Secondary: Save only the active supplier tab -->
       <button data-action="save-order"
-        class="w-full py-4 bg-brand text-white rounded-2xl font-bold text-base shadow-lg active:opacity-80">
-        Save Order ✓
+        class="w-full py-3 bg-surface border border-border rounded-2xl font-semibold text-sm active:opacity-80 flex items-center justify-center gap-1">
+        Save ${supplierLabel(_state.supplier)} only →
       </button>
     </div>
   `;
+
+  _attachEvents(container);
 }
+
+// ── Item card HTML ──────────────────────────────────────────────────────────
 
 function _itemCard(item, allOrders) {
   const info = getItemInfo(item.id, item.name, allOrders);
   const qty  = _state.quantities[item.id] ?? '';
   const isVeggies = _state.supplier === 'veggies';
 
-  // Badge HTML
   let badges = '';
   if (!isVeggies) {
     if (item.alwaysOn) {
-      badges += `<span class="badge badge-pin" title="Always-on item — streak warnings suppressed">📌</span>`;
+      badges += `<span class="badge badge-pin" title="Always-on — streak warnings suppressed">📌</span>`;
     }
     if (info.streak >= 2 && !item.alwaysOn) {
       badges += `<span class="badge badge-warn">${info.streak} weeks ⚠</span>`;
@@ -180,10 +191,82 @@ function _customItemCard(ci) {
   `;
 }
 
+// ── Save helpers ────────────────────────────────────────────────────────────
+
+// Build and save an order for one supplier. Returns the saved order, or null if empty.
+function _buildAndSaveOrder(supplier) {
+  const catalogItems = getCatalogItems(supplier);
+  const items = [];
+
+  catalogItems.forEach(item => {
+    const qty = _state.quantities[item.id];
+    if (qty && qty.trim()) {
+      items.push({ itemId: item.id, name: item.name, quantity: qty.trim() });
+    }
+  });
+
+  _state.customItems
+    .filter(ci => ci.supplier === supplier && ci.quantity && ci.quantity.trim())
+    .forEach(ci => items.push({ itemId: null, name: ci.name, quantity: ci.quantity.trim() }));
+
+  if (!items.length) return null;
+
+  const order = {
+    id: generateId(),
+    supplier,
+    date: _state.date,
+    items,
+    createdAt: new Date().toISOString(),
+  };
+  addOrder(order);
+
+  // Clear state for this supplier
+  const supplierItemIds = new Set(catalogItems.map(i => i.id));
+  Object.keys(_state.quantities).forEach(id => {
+    if (supplierItemIds.has(id)) delete _state.quantities[id];
+  });
+  _state.customItems = _state.customItems.filter(ci => ci.supplier !== supplier);
+
+  return order;
+}
+
+// "Save [Supplier] only" — saves the active tab
+function _saveCurrentOrder() {
+  const order = _buildAndSaveOrder(_state.supplier);
+  if (!order) {
+    showToast('Enter at least one quantity before saving', 'warning');
+    return;
+  }
+  vibrate(15);
+  window.dispatchEvent(new CustomEvent('navigate', {
+    detail: { screen: 'output', orderIds: [order.id] }
+  }));
+}
+
+// "Save All & Copy" — saves every supplier that has at least one filled item
+async function _saveAllOrders() {
+  const saved = [];
+  for (const sup of ['cfs', 'fish', 'veggies']) {
+    const order = _buildAndSaveOrder(sup);
+    if (order) saved.push(order);
+  }
+
+  if (!saved.length) {
+    showToast('Enter quantities in at least one tab first', 'warning');
+    return;
+  }
+
+  vibrate(15);
+
+  // Navigate to output screen with all saved order IDs
+  window.dispatchEvent(new CustomEvent('navigate', {
+    detail: { screen: 'output', orderIds: saved.map(o => o.id) }
+  }));
+}
+
 // ── Events ─────────────────────────────────────────────────────────────────
 
 function _attachEvents(container) {
-  // Supplier tabs
   container.addEventListener('click', e => {
     const el = e.target.closest('[data-action]');
     if (!el) return;
@@ -194,56 +277,51 @@ function _attachEvents(container) {
       render(container);
       return;
     }
-
     if (action === 'copy-last') {
       _copyLastOrder();
       render(container);
       return;
     }
-
     if (action === 'add-custom') {
-      const form = container.querySelector('#custom-item-form');
-      form.classList.toggle('hidden');
+      container.querySelector('#custom-item-form').classList.toggle('hidden');
       return;
     }
-
     if (action === 'ci-cancel') {
       container.querySelector('#custom-item-form').classList.add('hidden');
       return;
     }
-
     if (action === 'ci-save') {
       _saveCustomItem(container);
       return;
     }
-
     if (action === 'remove-custom') {
-      const id = el.dataset.ciId;
-      _state.customItems = _state.customItems.filter(c => c.id !== id);
+      _state.customItems = _state.customItems.filter(c => c.id !== el.dataset.ciId);
       render(container);
       return;
     }
-
     if (action === 'save-order') {
-      _saveOrder();
+      _saveCurrentOrder();
+      return;
+    }
+    if (action === 'save-all') {
+      _saveAllOrders();
       return;
     }
   });
 
-  // Date change
   container.querySelector('#order-date')?.addEventListener('change', e => {
     _state.date = e.target.value;
   });
 
-  // Quantity inputs — catalog items
   container.addEventListener('input', e => {
     const el = e.target;
     if (el.dataset.action === 'qty-input') {
       _state.quantities[el.dataset.itemId] = el.value;
-      // Highlight card when filled
       const card = el.closest('.card');
-      if (card) card.classList.toggle('ring-1', !!el.value.trim());
-      if (card) card.classList.toggle('ring-brand', !!el.value.trim());
+      if (card) {
+        card.classList.toggle('ring-1', !!el.value.trim());
+        card.classList.toggle('ring-brand', !!el.value.trim());
+      }
     }
     if (el.dataset.action === 'ci-qty-input') {
       const ci = _state.customItems.find(c => c.id === el.dataset.ciId);
@@ -255,8 +333,7 @@ function _attachEvents(container) {
 function _copyLastOrder() {
   const orders = getOrders(_state.supplier);
   if (!orders.length) { showToast('No previous order found for this supplier', 'info'); return; }
-  const last = orders[0];
-  last.items.forEach(i => {
+  orders[0].items.forEach(i => {
     if (i.itemId) _state.quantities[i.itemId] = i.quantity;
   });
   showToast('Quantities pre-filled from last order', 'success');
@@ -269,7 +346,13 @@ function _saveCustomItem(container) {
 
   if (!name) { showToast('Enter an item name', 'warning'); return; }
 
-  _state.customItems.push({ id: generateId(), name, quantity: qty, addToCatalog });
+  _state.customItems.push({
+    id: generateId(),
+    name,
+    quantity: qty,
+    addToCatalog,
+    supplier: _state.supplier,  // tag with current supplier
+  });
 
   if (addToCatalog) {
     const cat = getCatalog();
@@ -286,49 +369,16 @@ function _saveCustomItem(container) {
   render(container);
 }
 
-function _saveOrder() {
-  // Collect all items with non-blank quantities
-  const items = [];
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
-  const catalogItems = getCatalogItems(_state.supplier);
-  catalogItems.forEach(item => {
-    const qty = _state.quantities[item.id];
-    if (qty && qty.trim()) {
-      items.push({ itemId: item.id, name: item.name, quantity: qty.trim() });
-    }
-  });
-
-  _state.customItems.forEach(ci => {
-    if (ci.quantity && ci.quantity.trim()) {
-      items.push({ itemId: null, name: ci.name, quantity: ci.quantity.trim() });
-    }
-  });
-
-  if (!items.length) {
-    showToast('Enter at least one quantity before saving', 'warning');
-    return;
-  }
-
-  const order = {
-    id: generateId(),
-    supplier: _state.supplier,
-    date: _state.date,
-    items,
-    createdAt: new Date().toISOString(),
-  };
-
-  addOrder(order);
-  vibrate(15);
-
-  // Reset state for next order
-  _state.quantities = {};
-  _state.customItems = [];
-
-  // Navigate to output screen
-  window.dispatchEvent(new CustomEvent('navigate', { detail: { screen: 'output', orderId: order.id } }));
+// Returns true if the supplier has any filled quantities (for the dot indicator)
+function _hasAnyFilledForSupplier(supplier) {
+  const items = getCatalogItems(supplier);
+  const hasCatalogQty = items.some(i => _state.quantities[i.id]?.trim());
+  const hasCustomQty  = _state.customItems.some(ci => ci.supplier === supplier && ci.quantity?.trim());
+  return hasCatalogQty || hasCustomQty;
 }
 
-// Minimal HTML escape to prevent XSS from user-entered item names
 function escHtml(str) {
   if (!str) return '';
   return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
