@@ -372,9 +372,24 @@ function _attachEvents(container) {
     });
   }, { signal });
 
-  // Mobile "next" navigation — Android virtual keyboard doesn't fire keydown,
-  // so we use focusout/focusin instead. pointerdown flags deliberate taps so
-  // we don't hijack scroll when the user taps a specific field directly.
+  // Enter / Next key — move focus to the next qty input
+  container.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const el = e.target;
+    if (el.dataset.action !== 'qty-input' && el.dataset.action !== 'ci-qty-input') return;
+    e.preventDefault();
+    const inputs = Array.from(container.querySelectorAll(
+      'input[data-action="qty-input"], input[data-action="ci-qty-input"]'
+    )).filter(inp => inp.closest('.card')?.style.display !== 'none');
+    const idx = inputs.indexOf(el);
+    if (idx >= 0 && idx < inputs.length - 1) {
+      inputs[idx + 1].focus();
+    } else {
+      el.blur();
+    }
+  }, { signal });
+
+  // pointerdown flags deliberate taps so we don't hijack scroll correction
   container.addEventListener('pointerdown', e => {
     const isQty = !!(e.target.closest('input[data-action="qty-input"], input[data-action="ci-qty-input"]'));
     _pointerOnQty = isQty;
