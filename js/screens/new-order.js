@@ -5,6 +5,11 @@ import { generateId, todayISO, supplierLabel, getItemInfo, vibrate, showToast, f
 
 let _controller = null; // AbortController — prevents duplicate listeners on re-render
 
+// Tracks Y-position of a qty input when it loses focus, so the next focused
+// qty input can be scrolled to the same position. Null when a pointer tap caused the focus.
+let _qtyAnchorY  = null;
+let _pointerOnQty = false;
+
 // State persisted while the screen is open
 const CAT_LABELS = { all: 'All', common: 'Common', pizzeria: 'Pizzeria', cucina: 'Cucina' };
 
@@ -193,6 +198,7 @@ function _itemCard(item, allOrders) {
         value="${escHtml(qty)}"
         placeholder="${escHtml(info.lastQty || 'Quantity…')}"
         inputmode="decimal"
+        enterkeyhint="next"
         autocomplete="off"
         autocorrect="off"
         autocapitalize="off"
@@ -217,6 +223,7 @@ function _customItemCard(ci) {
         value="${escHtml(ci.quantity ?? '')}"
         placeholder="Quantity…"
         inputmode="decimal"
+        enterkeyhint="next"
         autocomplete="off"
         autocorrect="off"
         autocapitalize="off"
@@ -365,28 +372,40 @@ function _attachEvents(container) {
     });
   }, { signal });
 
-  // Enter on qty inputs — advance to the next input, keeping it at the same screen position
-  container.addEventListener('keydown', e => {
-    if (e.key !== 'Enter') return;
+  // Mobile "next" navigation — Android virtual keyboard doesn't fire keydown,
+  // so we use focusout/focusin instead. pointerdown flags deliberate taps so
+  // we don't hijack scroll when the user taps a specific field directly.
+  container.addEventListener('pointerdown', e => {
+    const isQty = !!(e.target.closest('input[data-action="qty-input"], input[data-action="ci-qty-input"]'));
+    _pointerOnQty = isQty;
+  }, { signal });
+
+  container.addEventListener('focusout', e => {
     const el = e.target;
-    if (el.dataset.action !== 'qty-input' && el.dataset.action !== 'ci-qty-input') return;
+    if (el.dataset.action === 'qty-input' || el.dataset.action === 'ci-qty-input') {
+      _qtyAnchorY = el.getBoundingClientRect().top;
+    } else {
+      _qtyAnchorY = null;
+    }
+  }, { signal });
 
-    const inputs = Array.from(container.querySelectorAll(
-      'input[data-action="qty-input"]:not([style*="display: none"]) , input[data-action="ci-qty-input"]'
-    )).filter(inp => inp.closest('.card')?.style.display !== 'none');
+  container.addEventListener('focusin', e => {
+    const el     = e.target;
+    const isQty  = el.dataset.action === 'qty-input' || el.dataset.action === 'ci-qty-input';
+    const anchor = _qtyAnchorY;
+    _qtyAnchorY  = null;
 
-    const idx = inputs.indexOf(el);
-    if (idx < 0 || idx >= inputs.length - 1) {
-      el.blur(); // dismiss keyboard when done
+    if (!isQty || _pointerOnQty || anchor === null) {
+      _pointerOnQty = false;
       return;
     }
+    _pointerOnQty = false;
 
-    e.preventDefault();
-    const anchorY = el.getBoundingClientRect().top;
-    const next    = inputs[idx + 1];
-    next.focus({ preventScroll: true });
-    const delta = next.getBoundingClientRect().top - anchorY;
-    if (Math.abs(delta) > 2) window.scrollBy(0, delta);
+    // rAF runs after the browser has auto-scrolled the new element into view
+    requestAnimationFrame(() => {
+      const delta = el.getBoundingClientRect().top - anchor;
+      if (Math.abs(delta) > 5) window.scrollBy(0, delta);
+    });
   }, { signal });
 
   container.addEventListener('input', e => {
