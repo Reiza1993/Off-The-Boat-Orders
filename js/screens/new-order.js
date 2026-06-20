@@ -365,6 +365,30 @@ function _attachEvents(container) {
     });
   }, { signal });
 
+  // Enter on qty inputs — advance to the next input, keeping it at the same screen position
+  container.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const el = e.target;
+    if (el.dataset.action !== 'qty-input' && el.dataset.action !== 'ci-qty-input') return;
+
+    const inputs = Array.from(container.querySelectorAll(
+      'input[data-action="qty-input"]:not([style*="display: none"]) , input[data-action="ci-qty-input"]'
+    )).filter(inp => inp.closest('.card')?.style.display !== 'none');
+
+    const idx = inputs.indexOf(el);
+    if (idx < 0 || idx >= inputs.length - 1) {
+      el.blur(); // dismiss keyboard when done
+      return;
+    }
+
+    e.preventDefault();
+    const anchorY = el.getBoundingClientRect().top;
+    const next    = inputs[idx + 1];
+    next.focus({ preventScroll: true });
+    const delta = next.getBoundingClientRect().top - anchorY;
+    if (Math.abs(delta) > 2) window.scrollBy(0, delta);
+  }, { signal });
+
   container.addEventListener('input', e => {
     const el = e.target;
     if (el.dataset.action === 'qty-input') {
