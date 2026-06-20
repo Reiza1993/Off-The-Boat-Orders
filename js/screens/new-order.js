@@ -3,59 +3,50 @@
 import { getCatalogItems, getOrders, addOrder, getCatalog, updateCatalog } from '../data.js';
 import { generateId, todayISO, supplierLabel, getItemInfo, vibrate, showToast, formatOrderText } from '../utils.js';
 
-let _controller = null; // AbortController — prevents duplicate listeners on re-render
-
-// Tracks Y-position of a qty input when it loses focus, so the next focused
-// qty input can be scrolled to the same position. Null when a pointer tap caused the focus.
-let _qtyAnchorY  = null;
+let _controller   = null;
+let _qtyAnchorY   = null;
 let _pointerOnQty = false;
 
-// State persisted while the screen is open
 const CAT_LABELS = { all: 'All', common: 'Common', pizzeria: 'Pizzeria', cucina: 'Cucina' };
+const CHIPS      = ['½', '1', '2', '3', '5', '10'];
 
 let _state = {
-  supplier: 'cfs',
-  date: todayISO(),
-  // quantities keyed by itemId — persists across tab switches since IDs don't overlap
-  quantities: {},
-  // custom items tagged with the supplier they were added under
-  customItems: [],  // [{ id, name, quantity, addToCatalog, supplier }]
-  categoryFilter: 'all', // 'all' | 'common' | 'pizzeria' | 'cucina'
+  supplier:        'cfs',
+  date:            todayISO(),
+  quantities:      {},
+  customItems:     [],
+  categoryFilter:  'all',
+  customOverrides: {},       // itemId → custom quantity string
+  expandedCustom:  new Set(), // itemIds with the custom field open
 };
 
 export function init() {
   _state.date = todayISO();
-  // quantities & customItems intentionally survive tab switches so partial orders persist
 }
 
 export function render(container) {
   let items       = getCatalogItems(_state.supplier);
   const allOrders = getOrders(_state.supplier);
-  // Apply category filter
   if (_state.categoryFilter !== 'all') {
     items = items.filter(i => (i.category || 'common') === _state.categoryFilter);
   }
-  // Only show custom items belonging to the active supplier tab
   const customItems = _state.customItems.filter(ci => ci.supplier === _state.supplier);
 
   container.innerHTML = `
     <!-- Supplier tabs -->
     <div class="flex gap-2 p-4 pb-0">
       ${['cfs','fish','veggies'].map(s => {
-        // Show a dot indicator if that supplier tab has any filled quantities
         const hasFill = _hasAnyFilledForSupplier(s);
         return `
-        <button
-          data-action="switch-supplier"
-          data-supplier="${s}"
+        <button data-action="switch-supplier" data-supplier="${s}"
           class="supplier-tab relative flex-1 py-3 rounded-xl font-semibold text-sm transition-all
             ${_state.supplier === s
               ? 'bg-brand text-white shadow-md'
               : 'bg-surface text-muted border border-border'}">
           ${supplierLabel(s)}
           ${hasFill && _state.supplier !== s ? `<span class="absolute top-1 right-1 w-2 h-2 rounded-full bg-green-400"></span>` : ''}
-        </button>
-      `}).join('')}
+        </button>`;
+      }).join('')}
     </div>
 
     <!-- Category filter -->
@@ -75,18 +66,13 @@ export function render(container) {
     <div class="flex items-center gap-3 px-4 pt-4">
       <div class="flex-1">
         <label class="block text-xs text-muted mb-1">Order date</label>
-        <input
-          id="order-date"
-          type="date"
-          value="${_state.date}"
-          class="w-full input-field"
-        />
+        <input id="order-date" type="date" value="${_state.date}" class="w-full input-field" />
       </div>
-      <button
-        data-action="copy-last"
+      <button data-action="copy-last"
         class="mt-5 px-4 py-3 bg-surface border border-border rounded-xl text-sm font-medium text-muted whitespace-nowrap"
-        title="Pre-fill from last ${supplierLabel(_state.supplier)} order"
-      >↩ Last order</button>
+        title="Pre-fill from last ${supplierLabel(_state.supplier)} order">
+        ↩ Last order
+      </button>
     </div>
 
     <!-- Search -->
@@ -137,12 +123,10 @@ export function render(container) {
 
     <!-- Bottom action buttons (sticky) -->
     <div class="sticky-bottom-action space-y-2">
-      <!-- Primary: Save all non-empty supplier tabs + copy combined text -->
       <button data-action="save-all"
         class="w-full py-4 bg-brand text-white rounded-2xl font-bold text-base shadow-lg active:opacity-80 flex items-center justify-center gap-2">
         💾 Save All &amp; Copy to Clipboard
       </button>
-      <!-- Secondary: Save only the active supplier tab -->
       <button data-action="save-order"
         class="w-full py-3 bg-surface border border-border rounded-2xl font-semibold text-sm active:opacity-80 flex items-center justify-center gap-1">
         Save ${supplierLabel(_state.supplier)} only →
@@ -156,53 +140,91 @@ export function render(container) {
 // ── Item card HTML ──────────────────────────────────────────────────────────
 
 function _itemCard(item, allOrders) {
-  const info = getItemInfo(item.id, item.name, allOrders);
-  const qty  = _state.quantities[item.id] ?? '';
-  const mode = item.mode || 'off';
+  const info      = getItemInfo(item.id, item.name, allOrders);
+  const qty       = _state.quantities[item.id] ?? '';
+  const unit      = item.unit || '';
+  const hasCustom = _state.expandedCustom.has(item.id);
+  const customVal = _state.customOverrides[item.id] || '';
+  const isFilled  = !!qty || hasCustom;
+  const mode      = item.mode || 'off';
   let badges = '';
 
   if (mode === 'mustHave') {
-    // Always show 📌 icon; add red "Missed last week" if not in most recent order
     badges += `<span class="badge badge-pin">📌</span>`;
     if (info.streak === 0 && info.weeksMissed >= 1) {
       badges += `<span class="badge badge-danger">Missed last week</span>`;
     }
-
   } else if (mode === 'track') {
-    // Show 🔔 icon; streak badges are dynamic (see input handler)
     badges += `<span class="badge badge-track">🔔</span>`;
     if (info.streak >= 2) {
-      // Already 2+ in a row — always show orange, no need to be dynamic
       badges += `<span class="badge badge-warn">${info.streak} in a row</span>`;
     } else if (info.streak === 1) {
-      // Ordered last week — badge upgrades to orange once user enters a qty
       badges += `<span class="badge badge-ok" data-streak-badge data-streak-value="1">Last week ✓</span>`;
     }
   }
-  // mode === 'off': no badges
 
   return `
-    <div class="card ${qty ? 'ring-1 ring-brand' : ''}">
+    <div class="card ${isFilled ? 'ring-1 ring-brand' : ''}" data-item-id="${item.id}">
       <div class="flex items-start justify-between gap-2 mb-2">
         <div class="flex-1 min-w-0">
-          <span class="font-medium text-sm leading-snug item-name">${item.name}</span>
-          ${item.minQty ? `<span class="text-xs text-muted ml-1">min: ${item.minQty}</span>` : ''}
+          <span class="font-medium text-sm leading-snug item-name">${escHtml(item.name)}</span>
+          ${item.minQty ? `<span class="text-xs text-muted ml-1">min: ${escHtml(item.minQty)}</span>` : ''}
         </div>
         ${badges ? `<div class="flex flex-wrap gap-1 shrink-0">${badges}</div>` : ''}
       </div>
-      <input
-        type="text"
-        data-item-id="${item.id}"
-        data-action="qty-input"
-        class="input-field qty-input"
-        value="${escHtml(qty)}"
-        placeholder="${escHtml(info.lastQty || 'Quantity…')}"
-        inputmode="decimal"
-        enterkeyhint="next"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="off"
-      />
+
+      <!-- Quantity chips -->
+      <div class="flex gap-1.5 flex-wrap mb-2">
+        ${CHIPS.map(v => `
+          <button data-action="chip" data-item-id="${item.id}" data-value="${v}"
+            class="px-3 py-1.5 rounded-lg text-sm font-semibold border transition-all
+              ${qty === v ? 'bg-brand text-white border-brand' : 'bg-surface border-border text-muted'}">
+            ${v}
+          </button>
+        `).join('')}
+        <button data-action="toggle-custom" data-item-id="${item.id}"
+          class="px-3 py-1.5 rounded-lg text-sm font-semibold border transition-all
+            ${hasCustom ? 'bg-amber-500 text-white border-amber-500' : 'bg-surface border-border text-muted'}">
+          Custom
+        </button>
+      </div>
+
+      <!-- Qty input + unit suffix -->
+      <div class="flex items-center gap-2">
+        <input
+          type="text"
+          data-item-id="${item.id}"
+          data-action="qty-input"
+          class="input-field qty-input min-w-0 flex-1"
+          value="${escHtml(qty)}"
+          placeholder="${escHtml(info.lastQty || 'Qty…')}"
+          inputmode="decimal"
+          enterkeyhint="next"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+        />
+        ${unit ? `<span class="text-sm text-muted shrink-0 pr-1">${escHtml(unit)}</span>` : ''}
+      </div>
+
+      <!-- Custom override field (shown when expanded) -->
+      ${hasCustom ? `
+        <div class="mt-2 custom-qty-wrap">
+          <input
+            type="text"
+            data-item-id="${item.id}"
+            data-action="custom-qty-input"
+            class="input-field qty-input"
+            value="${escHtml(customVal)}"
+            placeholder="Custom (e.g. 2x500g)…"
+            style="border-color: #f59e0b;"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            enterkeyhint="next"
+          />
+        </div>
+      ` : ''}
     </div>
   `;
 }
@@ -234,28 +256,40 @@ function _customItemCard(ci) {
 
 // ── Save helpers ────────────────────────────────────────────────────────────
 
-// Build and save an order for one supplier. Returns the saved order, or null if empty.
 function _buildAndSaveOrder(supplier) {
   const catalogItems = getCatalogItems(supplier);
   const items = [];
 
   catalogItems.forEach(item => {
-    const qty = _state.quantities[item.id];
-    if (qty && qty.trim()) {
-      items.push({ itemId: item.id, name: item.name, quantity: qty.trim() });
-    }
+    const qty    = _state.quantities[item.id];
+    const custom = _state.customOverrides[item.id];
+    if (!custom && (!qty || !qty.trim())) return;
+    if (!custom && qty.trim() === '0') return;
+    items.push({
+      itemId:         item.id,
+      name:           item.name,
+      quantity:       qty ? qty.trim() : '',
+      unit:           item.unit || null,
+      customQuantity: custom ? custom.trim() : null,
+    });
   });
 
   _state.customItems
     .filter(ci => ci.supplier === supplier && ci.quantity && ci.quantity.trim())
-    .forEach(ci => items.push({ itemId: null, name: ci.name, quantity: ci.quantity.trim() }));
+    .forEach(ci => items.push({
+      itemId:         null,
+      name:           ci.name,
+      quantity:       ci.quantity.trim(),
+      unit:           null,
+      customQuantity: null,
+    }));
 
   if (!items.length) return null;
 
   const order = {
-    id: generateId(),
+    id:        generateId(),
     supplier,
-    date: _state.date,
+    date:      _state.date,
     items,
     createdAt: new Date().toISOString(),
   };
@@ -266,12 +300,17 @@ function _buildAndSaveOrder(supplier) {
   Object.keys(_state.quantities).forEach(id => {
     if (supplierItemIds.has(id)) delete _state.quantities[id];
   });
+  Object.keys(_state.customOverrides).forEach(id => {
+    if (supplierItemIds.has(id)) delete _state.customOverrides[id];
+  });
+  _state.expandedCustom.forEach(id => {
+    if (supplierItemIds.has(id)) _state.expandedCustom.delete(id);
+  });
   _state.customItems = _state.customItems.filter(ci => ci.supplier !== supplier);
 
   return order;
 }
 
-// "Save [Supplier] only" — saves the active tab
 function _saveCurrentOrder() {
   const order = _buildAndSaveOrder(_state.supplier);
   if (!order) {
@@ -284,22 +323,17 @@ function _saveCurrentOrder() {
   }));
 }
 
-// "Save All & Copy" — saves every supplier that has at least one filled item
 async function _saveAllOrders() {
   const saved = [];
   for (const sup of ['cfs', 'fish', 'veggies']) {
     const order = _buildAndSaveOrder(sup);
     if (order) saved.push(order);
   }
-
   if (!saved.length) {
     showToast('Enter quantities in at least one tab first', 'warning');
     return;
   }
-
   vibrate(15);
-
-  // Navigate to output screen with all saved order IDs
   window.dispatchEvent(new CustomEvent('navigate', {
     detail: { screen: 'output', orderIds: saved.map(o => o.id) }
   }));
@@ -357,7 +391,77 @@ function _attachEvents(container) {
       _saveAllOrders();
       return;
     }
-  });
+
+    // Chip tap: fill qty input directly without re-render
+    if (action === 'chip') {
+      const id  = el.dataset.itemId;
+      const val = el.dataset.value;
+      _state.quantities[id] = val;
+      const card = el.closest('.card');
+      if (card) {
+        const input = card.querySelector('input[data-action="qty-input"]');
+        if (input) input.value = val;
+        card.classList.add('ring-1', 'ring-brand');
+        card.querySelectorAll('[data-action="chip"]').forEach(btn => {
+          const active = btn.dataset.value === val;
+          btn.classList.toggle('bg-brand',      active);
+          btn.classList.toggle('text-white',    active);
+          btn.classList.toggle('border-brand',  active);
+          btn.classList.toggle('bg-surface',    !active);
+          btn.classList.toggle('text-muted',    !active);
+          btn.classList.toggle('border-border', !active);
+        });
+        const streakBadge = card.querySelector('[data-streak-badge]');
+        if (streakBadge && streakBadge.dataset.streakValue === '1') {
+          streakBadge.className   = 'badge badge-warn';
+          streakBadge.textContent = '⚠ 2 in a row';
+        }
+      }
+      vibrate(6);
+      return;
+    }
+
+    // Toggle custom override field without re-render
+    if (action === 'toggle-custom') {
+      const id   = el.dataset.itemId;
+      const card = el.closest('.card');
+      if (!card) return;
+      const existing = card.querySelector('.custom-qty-wrap');
+      if (existing) {
+        existing.remove();
+        _state.expandedCustom.delete(id);
+        delete _state.customOverrides[id];
+        el.classList.remove('bg-amber-500', 'text-white', 'border-amber-500');
+        el.classList.add('bg-surface', 'text-muted', 'border-border');
+        const qty = _state.quantities[id] || '';
+        card.classList.toggle('ring-1',     !!qty.trim());
+        card.classList.toggle('ring-brand', !!qty.trim());
+      } else {
+        _state.expandedCustom.add(id);
+        const wrap = document.createElement('div');
+        wrap.className = 'mt-2 custom-qty-wrap';
+        const inp = document.createElement('input');
+        inp.type              = 'text';
+        inp.dataset.itemId    = id;
+        inp.dataset.action    = 'custom-qty-input';
+        inp.className         = 'input-field qty-input w-full';
+        inp.value             = _state.customOverrides[id] || '';
+        inp.placeholder       = 'Custom (e.g. 2x500g)…';
+        inp.style.borderColor = '#f59e0b';
+        inp.autocomplete      = 'off';
+        inp.setAttribute('autocorrect', 'off');
+        inp.setAttribute('autocapitalize', 'off');
+        inp.setAttribute('enterkeyhint', 'next');
+        wrap.appendChild(inp);
+        card.appendChild(wrap);
+        inp.focus();
+        el.classList.add('bg-amber-500', 'text-white', 'border-amber-500');
+        el.classList.remove('bg-surface', 'text-muted', 'border-border');
+        card.classList.add('ring-1', 'ring-brand');
+      }
+      return;
+    }
+  }, { signal });
 
   container.querySelector('#order-date')?.addEventListener('change', e => {
     _state.date = e.target.value;
@@ -376,10 +480,10 @@ function _attachEvents(container) {
   container.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
     const el = e.target;
-    if (el.dataset.action !== 'qty-input' && el.dataset.action !== 'ci-qty-input') return;
+    if (el.dataset.action !== 'qty-input' && el.dataset.action !== 'ci-qty-input' && el.dataset.action !== 'custom-qty-input') return;
     e.preventDefault();
     const inputs = Array.from(container.querySelectorAll(
-      'input[data-action="qty-input"], input[data-action="ci-qty-input"]'
+      'input[data-action="qty-input"], input[data-action="custom-qty-input"], input[data-action="ci-qty-input"]'
     )).filter(inp => inp.closest('.card')?.style.display !== 'none');
     const idx = inputs.indexOf(el);
     if (idx >= 0 && idx < inputs.length - 1) {
@@ -391,13 +495,15 @@ function _attachEvents(container) {
 
   // pointerdown flags deliberate taps so we don't hijack scroll correction
   container.addEventListener('pointerdown', e => {
-    const isQty = !!(e.target.closest('input[data-action="qty-input"], input[data-action="ci-qty-input"]'));
-    _pointerOnQty = isQty;
+    _pointerOnQty = !!(e.target.closest(
+      'input[data-action="qty-input"], input[data-action="ci-qty-input"], input[data-action="custom-qty-input"]'
+    ));
   }, { signal });
 
   container.addEventListener('focusout', e => {
-    const el = e.target;
-    if (el.dataset.action === 'qty-input' || el.dataset.action === 'ci-qty-input') {
+    const el    = e.target;
+    const isQty = el.dataset.action === 'qty-input' || el.dataset.action === 'ci-qty-input' || el.dataset.action === 'custom-qty-input';
+    if (isQty) {
       const card = el.closest('.card');
       if (card) { card.style.outline = ''; card.style.outlineOffset = ''; }
       _qtyAnchorY = el.getBoundingClientRect().top;
@@ -408,23 +514,18 @@ function _attachEvents(container) {
 
   container.addEventListener('focusin', e => {
     const el    = e.target;
-    const isQty = el.dataset.action === 'qty-input' || el.dataset.action === 'ci-qty-input';
-
+    const isQty = el.dataset.action === 'qty-input' || el.dataset.action === 'ci-qty-input' || el.dataset.action === 'custom-qty-input';
     if (isQty) {
       const card = el.closest('.card');
       if (card) { card.style.outline = '2px solid #f59e0b'; card.style.outlineOffset = '1px'; }
     }
-
-    const anchor = _qtyAnchorY;
-    _qtyAnchorY  = null;
-
+    const anchor  = _qtyAnchorY;
+    _qtyAnchorY   = null;
     if (!isQty || _pointerOnQty || anchor === null) {
       _pointerOnQty = false;
       return;
     }
     _pointerOnQty = false;
-
-    // rAF runs after the browser has auto-scrolled the new element into view
     requestAnimationFrame(() => {
       const delta = el.getBoundingClientRect().top - anchor;
       if (Math.abs(delta) > 5) window.scrollBy(0, delta);
@@ -437,11 +538,21 @@ function _attachEvents(container) {
       _state.quantities[el.dataset.itemId] = el.value;
       const card = el.closest('.card');
       if (card) {
-        const filled = !!el.value.trim();
-        card.classList.toggle('ring-1',     filled);
-        card.classList.toggle('ring-brand', filled);
-
-        // For Track items ordered last week (streak=1), upgrade badge once qty entered
+        const filled    = !!el.value.trim();
+        const hasCustom = _state.expandedCustom.has(el.dataset.itemId);
+        card.classList.toggle('ring-1',     filled || hasCustom);
+        card.classList.toggle('ring-brand', filled || hasCustom);
+        // Sync chip highlight with typed value
+        card.querySelectorAll('[data-action="chip"]').forEach(btn => {
+          const active = filled && btn.dataset.value === el.value.trim();
+          btn.classList.toggle('bg-brand',      active);
+          btn.classList.toggle('text-white',    active);
+          btn.classList.toggle('border-brand',  active);
+          btn.classList.toggle('bg-surface',    !active);
+          btn.classList.toggle('text-muted',    !active);
+          btn.classList.toggle('border-border', !active);
+        });
+        // Upgrade streak badge once qty entered
         const streakBadge = card.querySelector('[data-streak-badge]');
         if (streakBadge && streakBadge.dataset.streakValue === '1') {
           if (filled) {
@@ -458,6 +569,9 @@ function _attachEvents(container) {
       const ci = _state.customItems.find(c => c.id === el.dataset.ciId);
       if (ci) ci.quantity = el.value;
     }
+    if (el.dataset.action === 'custom-qty-input') {
+      _state.customOverrides[el.dataset.itemId] = el.value;
+    }
   }, { signal });
 }
 
@@ -465,7 +579,13 @@ function _copyLastOrder() {
   const orders = getOrders(_state.supplier);
   if (!orders.length) { showToast('No previous order found for this supplier', 'info'); return; }
   orders[0].items.forEach(i => {
-    if (i.itemId) _state.quantities[i.itemId] = i.quantity;
+    if (i.itemId) {
+      _state.quantities[i.itemId] = i.quantity || '';
+      if (i.customQuantity) {
+        _state.customOverrides[i.itemId] = i.customQuantity;
+        _state.expandedCustom.add(i.itemId);
+      }
+    }
   });
   showToast('Quantities pre-filled from last order', 'success');
 }
@@ -474,24 +594,25 @@ function _saveCustomItem(container) {
   const name = container.querySelector('#ci-name')?.value.trim();
   const qty  = container.querySelector('#ci-qty')?.value.trim();
   const addToCatalog = container.querySelector('#ci-catalog')?.checked;
-
   if (!name) { showToast('Enter an item name', 'warning'); return; }
 
   _state.customItems.push({
-    id: generateId(),
+    id:           generateId(),
     name,
-    quantity: qty,
+    quantity:     qty,
     addToCatalog,
-    supplier: _state.supplier,  // tag with current supplier
+    supplier:     _state.supplier,
   });
 
   if (addToCatalog) {
     const cat = getCatalog();
     cat[_state.supplier].push({
-      id: generateId(),
+      id:       generateId(),
       name,
-      minQty: '',
-      alwaysOn: false,
+      minQty:   '',
+      mode:     'off',
+      category: 'common',
+      unit:     null,
       archived: false,
     });
     updateCatalog(cat);
@@ -500,13 +621,14 @@ function _saveCustomItem(container) {
   render(container);
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-// Returns true if the supplier has any filled quantities (for the dot indicator)
 function _hasAnyFilledForSupplier(supplier) {
   const items = getCatalogItems(supplier);
-  const hasCatalogQty = items.some(i => _state.quantities[i.id]?.trim());
-  const hasCustomQty  = _state.customItems.some(ci => ci.supplier === supplier && ci.quantity?.trim());
+  const hasCatalogQty = items.some(i => {
+    const qty    = _state.quantities[i.id]?.trim();
+    const custom = _state.customOverrides[i.id]?.trim();
+    return custom || (qty && qty !== '0');
+  });
+  const hasCustomQty = _state.customItems.some(ci => ci.supplier === supplier && ci.quantity?.trim());
   return hasCatalogQty || hasCustomQty;
 }
 

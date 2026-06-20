@@ -61,8 +61,20 @@ export function formatOrderText(order) {
   const date  = formatDate(order.date);
   const lines = [`${label} Off The Boat Pizzeria - ${date}`];
   order.items
-    .filter(i => i.quantity && i.quantity.trim())
-    .forEach(i => lines.push(`${i.name} - ${i.quantity.trim()}`));
+    .filter(i => {
+      if (i.customQuantity && i.customQuantity.trim()) return true;
+      if (!i.quantity || !i.quantity.trim()) return false;
+      return i.quantity.trim() !== '0';
+    })
+    .forEach(i => {
+      if (i.customQuantity && i.customQuantity.trim()) {
+        lines.push(`${i.name} - ${i.customQuantity.trim()}`);
+      } else {
+        const qty  = i.quantity.trim();
+        const unit = i.unit ? ` ${i.unit}` : '';
+        lines.push(`${i.name} - ${qty}${unit}`);
+      }
+    });
   return lines.join('\n');
 }
 
@@ -95,7 +107,11 @@ export function getItemInfo(itemId, itemName, supplierOrders) {
   }
 
   const hasItem = order =>
-    order.items.some(i => (itemId && i.itemId === itemId) || i.name === itemName);
+    order.items.some(i => {
+      if (!((itemId && i.itemId === itemId) || i.name === itemName)) return false;
+      if (i.customQuantity && i.customQuantity.trim()) return true;
+      return i.quantity && i.quantity.trim() && i.quantity.trim() !== '0';
+    });
 
   // Streak: count consecutive orders from newest that include the item
   let streak = 0;
@@ -114,10 +130,15 @@ export function getItemInfo(itemId, itemName, supplierOrders) {
     }
   }
 
-  // Last-used quantity
+  // Last-used quantity (prefer customQuantity if set)
   const lastOrderWithItem = supplierOrders.find(hasItem);
   const lastQty = lastOrderWithItem
-    ? lastOrderWithItem.items.find(i => (itemId && i.itemId === itemId) || i.name === itemName)?.quantity ?? null
+    ? (() => {
+        const it = lastOrderWithItem.items.find(i => (itemId && i.itemId === itemId) || i.name === itemName);
+        if (!it) return null;
+        if (it.customQuantity && it.customQuantity.trim()) return it.customQuantity.trim();
+        return it.quantity ? it.quantity.trim() : null;
+      })()
     : null;
 
   return { streak, weeksMissed, lastQty };

@@ -62,7 +62,11 @@ export function render(container) {
 function _orderCard(order) {
   const color    = supplierColor(order.supplier);
   const isExpand = _expanded === order.id;
-  const orderedItems = order.items.filter(i => i.quantity && i.quantity.trim());
+  const orderedItems = order.items.filter(i => {
+    if (i.customQuantity && i.customQuantity.trim()) return true;
+    if (!i.quantity || !i.quantity.trim()) return false;
+    return i.quantity.trim() !== '0';
+  });
 
   return `
     <div class="card ${isExpand ? 'ring-1 ring-brand' : ''}" data-order-id="${order.id}">
@@ -81,12 +85,20 @@ function _orderCard(order) {
       <!-- Expanded detail -->
       ${isExpand ? `
         <div class="mt-3 pt-3 border-t border-border space-y-1">
-          ${orderedItems.map(i => `
+          ${orderedItems.map(i => {
+            let qtyDisplay;
+            if (i.customQuantity && i.customQuantity.trim()) {
+              qtyDisplay = escHtml(i.customQuantity.trim());
+            } else {
+              qtyDisplay = escHtml(i.quantity.trim());
+              if (i.unit) qtyDisplay += ` ${escHtml(i.unit)}`;
+            }
+            return `
             <div class="flex justify-between text-sm py-1">
               <span>${escHtml(i.name)}</span>
-              <span class="font-semibold text-brand">${escHtml(i.quantity)}</span>
-            </div>
-          `).join('')}
+              <span class="font-semibold text-brand">${qtyDisplay}</span>
+            </div>`;
+          }).join('')}
         </div>
 
         <!-- Actions -->

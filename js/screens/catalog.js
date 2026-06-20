@@ -112,6 +112,8 @@ export function render(container) {
             autocomplete="off" autocorrect="off" autocapitalize="words">
           <input id="new-minqty" type="text" placeholder="Min qty (e.g. 3, 1 bag, as needed)" class="input-field"
             autocomplete="off" autocorrect="off" autocapitalize="off">
+          <input id="new-unit" type="text" placeholder="Unit (e.g. bags, cans, kg) — optional" class="input-field"
+            autocomplete="off" autocorrect="off" autocapitalize="off">
           <select id="new-category" class="input-field text-sm">
             <option value="common"   ${_categoryFilter === 'common'   ? 'selected' : ''}>Common</option>
             <option value="pizzeria" ${_categoryFilter === 'pizzeria' ? 'selected' : ''}>Pizzeria</option>
@@ -152,6 +154,9 @@ function _itemRow(item) {
           class="input-field" autocomplete="off" autocorrect="off" autocapitalize="words">
         <input id="edit-minqty-${escId(item.id)}" type="text" value="${escHtml(item.minQty || '')}"
           placeholder="Min qty (e.g. 3, 1 bag, as needed)" class="input-field"
+          autocomplete="off" autocorrect="off" autocapitalize="off">
+        <input id="edit-unit-${escId(item.id)}" type="text" value="${escHtml(item.unit || '')}"
+          placeholder="Unit (e.g. bags, cans, kg) — optional" class="input-field"
           autocomplete="off" autocorrect="off" autocapitalize="off">
         <select id="edit-cat-${escId(item.id)}" class="input-field text-sm">
           <option value="common"   ${cat === 'common'   ? 'selected' : ''}>Common</option>
@@ -195,6 +200,7 @@ function _itemRow(item) {
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-1.5 flex-wrap mb-0.5">
             <p class="font-medium text-sm leading-snug item-name">${escHtml(item.name)}</p>
+            ${item.unit ? `<span class="text-xs text-muted">· ${escHtml(item.unit)}</span>` : ''}
             <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${catMeta.cls}">${catMeta.label}</span>
           </div>
           <p class="text-xs text-muted">${item.minQty ? `min: ${escHtml(item.minQty)}` : 'no min set'}</p>
@@ -296,6 +302,7 @@ function _attachEvents(container) {
       const safeId   = escId(id);
       const name     = document.getElementById(`edit-name-${safeId}`)?.value.trim();
       const minQty   = document.getElementById(`edit-minqty-${safeId}`)?.value.trim();
+      const unit     = document.getElementById(`edit-unit-${safeId}`)?.value.trim() || null;
       const category = document.getElementById(`edit-cat-${safeId}`)?.value || 'common';
       if (!name) { showToast('Item name is required', 'warning'); return; }
 
@@ -304,6 +311,7 @@ function _attachEvents(container) {
       if (item) {
         item.name     = name;
         item.minQty   = minQty || '';
+        item.unit     = unit;
         item.category = category;
         updateCatalog(catalog);
         vibrate(10);
@@ -332,9 +340,11 @@ function _attachEvents(container) {
     if (action === 'add-item') {
       const nameEl     = container.querySelector('#new-name');
       const minEl      = container.querySelector('#new-minqty');
+      const unitEl     = container.querySelector('#new-unit');
       const categoryEl = container.querySelector('#new-category');
       const name       = nameEl?.value.trim();
       const minQty     = minEl?.value.trim();
+      const unit       = unitEl?.value.trim() || null;
       const category   = categoryEl?.value || 'common';
       if (!name) { showToast('Enter an item name', 'warning'); return; }
 
@@ -345,6 +355,7 @@ function _attachEvents(container) {
         minQty:   minQty || '',
         mode:     'off',
         category,
+        unit:     unit || null,
         archived: false,
       });
       updateCatalog(catalog);
@@ -352,6 +363,7 @@ function _attachEvents(container) {
       showToast(`"${name}" added to ${supplierLabel(_supplier)}`, 'success');
       if (nameEl) nameEl.value = '';
       if (minEl)  minEl.value  = '';
+      if (unitEl) unitEl.value = '';
       render(container);
       return;
     }

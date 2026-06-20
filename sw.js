@@ -1,7 +1,7 @@
 // Service Worker for Off The Boat Pizzeria Orders
 // Provides offline support via cache-first strategy
 
-const CACHE_NAME = 'otb-orders-v7';
+const CACHE_NAME = 'otb-orders-v8';
 
 // Files to cache on install for offline use
 const PRECACHE_URLS = [

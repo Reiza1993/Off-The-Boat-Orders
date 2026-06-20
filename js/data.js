@@ -4,7 +4,7 @@
 import { DEFAULT_CATALOG } from './catalog-defaults.js';
 
 const STORAGE_KEY  = 'otb_orders_v1';
-const DATA_VERSION = 3;
+const DATA_VERSION = 4;
 
 // ── Core storage helpers ───────────────────────────────────────────────────
 
@@ -66,6 +66,15 @@ function _ensureShape(data) {
       if (!item.mode)                  item.mode     = 'off';
       if (!item.category)              item.category = 'common';
       if (item.archived === undefined) item.archived = false;
+      if (item.unit      === undefined) item.unit    = null;
+    });
+  });
+
+  // Guarantee required fields on all order items (handles old orders too)
+  data.orders.forEach(order => {
+    (order.items || []).forEach(i => {
+      if (i.unit           === undefined) i.unit           = null;
+      if (i.customQuantity === undefined) i.customQuantity = null;
     });
   });
 
