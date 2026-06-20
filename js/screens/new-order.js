@@ -8,7 +8,7 @@ let _qtyAnchorY   = null;
 let _pointerOnQty = false;
 
 const CAT_LABELS = { all: 'All', common: 'Common', pizzeria: 'Pizzeria', cucina: 'Cucina' };
-const CHIPS      = ['½', '1', '2', '3', '5', '10'];
+const CHIPS      = ['½'];
 
 let _state = {
   supplier:        'cfs',

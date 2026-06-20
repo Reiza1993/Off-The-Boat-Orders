@@ -94,9 +94,9 @@ function _orderCard(order) {
               if (i.unit) qtyDisplay += ` ${escHtml(i.unit)}`;
             }
             return `
-            <div class="flex justify-between text-sm py-1">
-              <span>${escHtml(i.name)}</span>
-              <span class="font-semibold text-brand">${qtyDisplay}</span>
+            <div class="flex justify-between items-center text-sm py-1 gap-3">
+              <span class="flex-1 min-w-0">${escHtml(i.name)}</span>
+              <span class="font-bold shrink-0 text-amber-400">${qtyDisplay}</span>
             </div>`;
           }).join('')}
         </div>
