@@ -383,6 +383,8 @@ function _attachEvents(container) {
   container.addEventListener('focusout', e => {
     const el = e.target;
     if (el.dataset.action === 'qty-input' || el.dataset.action === 'ci-qty-input') {
+      const card = el.closest('.card');
+      if (card) { card.style.outline = ''; card.style.outlineOffset = ''; }
       _qtyAnchorY = el.getBoundingClientRect().top;
     } else {
       _qtyAnchorY = null;
@@ -390,8 +392,14 @@ function _attachEvents(container) {
   }, { signal });
 
   container.addEventListener('focusin', e => {
-    const el     = e.target;
-    const isQty  = el.dataset.action === 'qty-input' || el.dataset.action === 'ci-qty-input';
+    const el    = e.target;
+    const isQty = el.dataset.action === 'qty-input' || el.dataset.action === 'ci-qty-input';
+
+    if (isQty) {
+      const card = el.closest('.card');
+      if (card) { card.style.outline = '2px solid #f59e0b'; card.style.outlineOffset = '1px'; }
+    }
+
     const anchor = _qtyAnchorY;
     _qtyAnchorY  = null;
 
