@@ -1,22 +1,36 @@
-// Catalog management — add/edit/remove items, set tracking mode, filter by mode
+// Catalog management — add/edit/remove items, set tracking mode, filter by mode/category, search
 // AbortController ensures only one delegated click listener exists at a time.
 
 import { getCatalog, updateCatalog } from '../data.js';
 import { generateId, supplierLabel, vibrate, showToast, showConfirm, MODES, MODE_META } from '../utils.js';
 
-let _supplier   = 'cfs';
-let _modeFilter = 'all';   // 'all' | 'off' | 'track' | 'mustHave'
-let _editingId  = null;
-let _controller = null;
+let _supplier       = 'cfs';
+let _modeFilter     = 'all';   // 'all' | 'off' | 'track' | 'mustHave'
+let _categoryFilter = 'all';   // 'all' | 'common' | 'pizzeria' | 'cucina'
+let _search         = '';
+let _editingId      = null;
+let _controller     = null;
+
+const CATEGORIES = ['common', 'pizzeria', 'cucina'];
+const CAT_META = {
+  common:   { label: 'Common',   cls: 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400' },
+  pizzeria: { label: 'Pizzeria', cls: 'bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300' },
+  cucina:   { label: 'Cucina',   cls: 'bg-violet-100 dark:bg-violet-950 text-violet-700 dark:text-violet-300' },
+};
 
 export function init() {}
 
 export function render(container) {
-  const catalog    = getCatalog();
-  const allItems   = (catalog[_supplier] || []).filter(i => !i.archived);
-  const filtered   = _modeFilter === 'all'
+  const catalog  = getCatalog();
+  const allItems = (catalog[_supplier] || []).filter(i => !i.archived);
+
+  let filtered = _modeFilter === 'all'
     ? allItems
     : allItems.filter(i => (i.mode || 'off') === _modeFilter);
+
+  if (_categoryFilter !== 'all') {
+    filtered = filtered.filter(i => (i.category || 'common') === _categoryFilter);
+  }
 
   container.innerHTML = `
     <!-- Quick link to Backup -->
@@ -52,9 +66,9 @@ export function render(container) {
       `).join('')}
     </div>
 
-    <!-- Filter by mode -->
+    <!-- Mode filter + count -->
     <div class="px-4 pt-3 flex items-center gap-2">
-      <label class="text-xs text-muted font-medium shrink-0">Show:</label>
+      <label class="text-xs text-muted font-medium shrink-0">Mode:</label>
       <select id="mode-filter" class="input-field text-sm flex-1">
         <option value="all"      ${_modeFilter==='all'      ?'selected':''}>All modes</option>
         <option value="mustHave" ${_modeFilter==='mustHave' ?'selected':''}>📌 Must Have</option>
@@ -64,6 +78,25 @@ export function render(container) {
       <span class="text-xs text-muted shrink-0">${filtered.length} / ${allItems.length}</span>
     </div>
 
+    <!-- Category filter -->
+    <div class="px-4 pt-2 flex gap-1.5">
+      ${['all', ...CATEGORIES].map(c => `
+        <button data-action="cat-filter" data-cat="${c}"
+          class="flex-1 py-2 rounded-xl text-xs font-semibold transition-all
+            ${_categoryFilter === c
+              ? 'bg-brand text-white shadow-sm'
+              : 'bg-surface border border-border text-muted'}">
+          ${c === 'all' ? 'All' : CAT_META[c].label}
+        </button>
+      `).join('')}
+    </div>
+
+    <!-- Search -->
+    <div class="px-4 pt-2">
+      <input id="catalog-search" type="search" placeholder="Search items…" value="${escHtml(_search)}"
+        class="input-field" autocomplete="off" autocorrect="off" autocapitalize="off">
+    </div>
+
     <!-- Item list -->
     <div id="catalog-list" class="px-4 pt-2 space-y-2 pb-4">
       ${filtered.map(item => _itemRow(item)).join('')}
@@ -71,7 +104,7 @@ export function render(container) {
         <div class="card text-center text-muted py-6 text-sm">No items match this filter</div>
       ` : ''}
 
-      <!-- Add item form (always visible, below the filtered list) -->
+      <!-- Add item form (visible when mode filter is All) -->
       ${_modeFilter === 'all' ? `
         <div class="card mt-2 space-y-3">
           <p class="font-semibold text-sm">Add item to ${supplierLabel(_supplier)}</p>
@@ -79,20 +112,26 @@ export function render(container) {
             autocomplete="off" autocorrect="off" autocapitalize="words">
           <input id="new-minqty" type="text" placeholder="Min qty (e.g. 3, 1 bag, as needed)" class="input-field"
             autocomplete="off" autocorrect="off" autocapitalize="off">
+          <select id="new-category" class="input-field text-sm">
+            <option value="common"   ${_categoryFilter === 'common'   ? 'selected' : ''}>Common</option>
+            <option value="pizzeria" ${_categoryFilter === 'pizzeria' ? 'selected' : ''}>Pizzeria</option>
+            <option value="cucina"   ${_categoryFilter === 'cucina'   ? 'selected' : ''}>Cucina</option>
+          </select>
           <button data-action="add-item" class="w-full py-3 bg-brand text-white rounded-xl font-semibold text-sm">
             + Add item
           </button>
         </div>
       ` : `
-        <button data-action="clear-filter"
+        <button data-action="clear-mode-filter"
           class="w-full py-3 border-2 border-dashed border-border rounded-xl text-sm text-muted">
-          Clear filter to add items
+          Clear mode filter to add items
         </button>
       `}
     </div>
   `;
 
   _attachEvents(container);
+  _applySearch(container);
 }
 
 // ── Item row ───────────────────────────────────────────────────────────────
@@ -102,6 +141,8 @@ function _itemRow(item) {
   const mode      = item.mode || 'off';
   const meta      = MODE_META[mode];
   const nextMode  = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
+  const cat       = item.category || 'common';
+  const catMeta   = CAT_META[cat];
 
   if (isEditing) {
     return `
@@ -112,6 +153,11 @@ function _itemRow(item) {
         <input id="edit-minqty-${escId(item.id)}" type="text" value="${escHtml(item.minQty || '')}"
           placeholder="Min qty (e.g. 3, 1 bag, as needed)" class="input-field"
           autocomplete="off" autocorrect="off" autocapitalize="off">
+        <select id="edit-cat-${escId(item.id)}" class="input-field text-sm">
+          <option value="common"   ${cat === 'common'   ? 'selected' : ''}>Common</option>
+          <option value="pizzeria" ${cat === 'pizzeria' ? 'selected' : ''}>Pizzeria</option>
+          <option value="cucina"   ${cat === 'cucina'   ? 'selected' : ''}>Cucina</option>
+        </select>
         <div class="flex gap-2">
           <button data-action="save-edit" data-item-id="${item.id}"
             class="flex-1 py-3 rounded-xl bg-brand text-white text-sm font-semibold">Save</button>
@@ -145,9 +191,12 @@ function _itemRow(item) {
           ">${meta.label}</span>
         </button>
 
-        <!-- Name + min qty -->
+        <!-- Name + category badge + min qty -->
         <div class="flex-1 min-w-0">
-          <p class="font-medium text-sm leading-snug">${escHtml(item.name)}</p>
+          <div class="flex items-center gap-1.5 flex-wrap mb-0.5">
+            <p class="font-medium text-sm leading-snug item-name">${escHtml(item.name)}</p>
+            <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${catMeta.cls}">${catMeta.label}</span>
+          </div>
           <p class="text-xs text-muted">${item.minQty ? `min: ${escHtml(item.minQty)}` : 'no min set'}</p>
         </div>
 
@@ -178,6 +227,12 @@ function _attachEvents(container) {
     render(container);
   }, { signal });
 
+  // Search input — live filter without re-render
+  container.querySelector('#catalog-search')?.addEventListener('input', e => {
+    _search = e.target.value;
+    _applySearch(container);
+  }, { signal });
+
   // All button clicks via delegation
   container.addEventListener('click', e => {
     const el = e.target.closest('[data-action]');
@@ -190,13 +245,21 @@ function _attachEvents(container) {
     }
 
     if (action === 'switch-supplier') {
-      _supplier  = el.dataset.supplier;
-      _editingId = null;
+      _supplier       = el.dataset.supplier;
+      _editingId      = null;
+      _search         = '';
+      _categoryFilter = 'all';
       render(container);
       return;
     }
 
-    if (action === 'clear-filter') {
+    if (action === 'cat-filter') {
+      _categoryFilter = el.dataset.cat;
+      render(container);
+      return;
+    }
+
+    if (action === 'clear-mode-filter') {
       _modeFilter = 'all';
       render(container);
       return;
@@ -229,17 +292,19 @@ function _attachEvents(container) {
     }
 
     if (action === 'save-edit') {
-      const id     = el.dataset.itemId;
-      const safeId = escId(id);
-      const name   = document.getElementById(`edit-name-${safeId}`)?.value.trim();
-      const minQty = document.getElementById(`edit-minqty-${safeId}`)?.value.trim();
+      const id       = el.dataset.itemId;
+      const safeId   = escId(id);
+      const name     = document.getElementById(`edit-name-${safeId}`)?.value.trim();
+      const minQty   = document.getElementById(`edit-minqty-${safeId}`)?.value.trim();
+      const category = document.getElementById(`edit-cat-${safeId}`)?.value || 'common';
       if (!name) { showToast('Item name is required', 'warning'); return; }
 
       const catalog = getCatalog();
       const item    = catalog[_supplier].find(i => i.id === id);
       if (item) {
-        item.name   = name;
-        item.minQty = minQty || '';
+        item.name     = name;
+        item.minQty   = minQty || '';
+        item.category = category;
         updateCatalog(catalog);
         vibrate(10);
         showToast('Item updated', 'success');
@@ -265,18 +330,21 @@ function _attachEvents(container) {
     }
 
     if (action === 'add-item') {
-      const nameEl = container.querySelector('#new-name');
-      const minEl  = container.querySelector('#new-minqty');
-      const name   = nameEl?.value.trim();
-      const minQty = minEl?.value.trim();
+      const nameEl     = container.querySelector('#new-name');
+      const minEl      = container.querySelector('#new-minqty');
+      const categoryEl = container.querySelector('#new-category');
+      const name       = nameEl?.value.trim();
+      const minQty     = minEl?.value.trim();
+      const category   = categoryEl?.value || 'common';
       if (!name) { showToast('Enter an item name', 'warning'); return; }
 
       const catalog = getCatalog();
       catalog[_supplier].push({
-        id: generateId(),
+        id:       generateId(),
         name,
-        minQty: minQty || '',
-        mode: 'off',
+        minQty:   minQty || '',
+        mode:     'off',
+        category,
         archived: false,
       });
       updateCatalog(catalog);
@@ -291,6 +359,14 @@ function _attachEvents(container) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+function _applySearch(container) {
+  const q = _search.toLowerCase().trim();
+  container.querySelectorAll('#catalog-list [data-item-id]').forEach(card => {
+    const name = card.querySelector('.item-name')?.textContent.toLowerCase() || '';
+    card.style.display = (q && !name.includes(q)) ? 'none' : '';
+  });
+}
 
 function escId(id) {
   return id.replace(/[^a-z0-9]/gi, '_');

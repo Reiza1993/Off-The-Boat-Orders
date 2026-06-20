@@ -6,13 +6,16 @@ import { generateId, todayISO, supplierLabel, getItemInfo, vibrate, showToast, f
 let _controller = null; // AbortController — prevents duplicate listeners on re-render
 
 // State persisted while the screen is open
+const CAT_LABELS = { all: 'All', common: 'Common', pizzeria: 'Pizzeria', cucina: 'Cucina' };
+
 let _state = {
   supplier: 'cfs',
   date: todayISO(),
   // quantities keyed by itemId — persists across tab switches since IDs don't overlap
   quantities: {},
   // custom items tagged with the supplier they were added under
-  customItems: [], // [{ id, name, quantity, addToCatalog, supplier }]
+  customItems: [],  // [{ id, name, quantity, addToCatalog, supplier }]
+  categoryFilter: 'all', // 'all' | 'common' | 'pizzeria' | 'cucina'
 };
 
 export function init() {
@@ -21,8 +24,12 @@ export function init() {
 }
 
 export function render(container) {
-  const items     = getCatalogItems(_state.supplier);
+  let items       = getCatalogItems(_state.supplier);
   const allOrders = getOrders(_state.supplier);
+  // Apply category filter
+  if (_state.categoryFilter !== 'all') {
+    items = items.filter(i => (i.category || 'common') === _state.categoryFilter);
+  }
   // Only show custom items belonging to the active supplier tab
   const customItems = _state.customItems.filter(ci => ci.supplier === _state.supplier);
 
@@ -46,6 +53,19 @@ export function render(container) {
       `}).join('')}
     </div>
 
+    <!-- Category filter -->
+    <div class="flex gap-1.5 px-4 pt-3">
+      ${Object.entries(CAT_LABELS).map(([c, label]) => `
+        <button data-action="cat-filter" data-cat="${c}"
+          class="flex-1 py-2 rounded-xl text-xs font-semibold transition-all
+            ${_state.categoryFilter === c
+              ? 'bg-brand text-white shadow-sm'
+              : 'bg-surface text-muted border border-border'}">
+          ${label}
+        </button>
+      `).join('')}
+    </div>
+
     <!-- Date + Copy last order -->
     <div class="flex items-center gap-3 px-4 pt-4">
       <div class="flex-1">
@@ -64,8 +84,14 @@ export function render(container) {
       >↩ Last order</button>
     </div>
 
+    <!-- Search -->
+    <div class="px-4 pt-3">
+      <input id="order-search" type="search" placeholder="Search items…"
+        class="input-field" autocomplete="off" autocorrect="off" autocapitalize="off">
+    </div>
+
     <!-- Item list -->
-    <div id="item-list" class="px-4 pt-4 space-y-2 pb-2">
+    <div id="item-list" class="px-4 pt-3 space-y-2 pb-2">
       ${items.map(item => _itemCard(item, allOrders)).join('')}
     </div>
 
@@ -154,7 +180,7 @@ function _itemCard(item, allOrders) {
     <div class="card ${qty ? 'ring-1 ring-brand' : ''}">
       <div class="flex items-start justify-between gap-2 mb-2">
         <div class="flex-1 min-w-0">
-          <span class="font-medium text-sm leading-snug">${item.name}</span>
+          <span class="font-medium text-sm leading-snug item-name">${item.name}</span>
           ${item.minQty ? `<span class="text-xs text-muted ml-1">min: ${item.minQty}</span>` : ''}
         </div>
         ${badges ? `<div class="flex flex-wrap gap-1 shrink-0">${badges}</div>` : ''}
@@ -289,6 +315,11 @@ function _attachEvents(container) {
       render(container);
       return;
     }
+    if (action === 'cat-filter') {
+      _state.categoryFilter = el.dataset.cat;
+      render(container);
+      return;
+    }
     if (action === 'copy-last') {
       _copyLastOrder();
       render(container);
@@ -323,6 +354,15 @@ function _attachEvents(container) {
 
   container.querySelector('#order-date')?.addEventListener('change', e => {
     _state.date = e.target.value;
+  }, { signal });
+
+  // Search — live filter without re-render
+  container.querySelector('#order-search')?.addEventListener('input', e => {
+    const q = e.target.value.toLowerCase().trim();
+    container.querySelectorAll('#item-list .card').forEach(card => {
+      const name = card.querySelector('.item-name')?.textContent.toLowerCase() || '';
+      card.style.display = (q && !name.includes(q)) ? 'none' : '';
+    });
   }, { signal });
 
   container.addEventListener('input', e => {
