@@ -1,11 +1,12 @@
 // New Order screen — select supplier, fill quantities, save
 
-import { getCatalogItems, getOrders, addOrder, getCatalog, updateCatalog } from '../data.js';
+import { getCatalogItems, getOrders, addOrder, getCatalog, updateCatalog, getDraft, saveDraft, clearDraft } from '../data.js';
 import { generateId, todayISO, supplierLabel, getItemInfo, vibrate, showToast, formatOrderText } from '../utils.js';
 
 let _controller   = null;
 let _qtyAnchorY   = null;
 let _pointerOnQty = false;
+let _draftTimer   = null;
 
 const CAT_LABELS = { all: 'All', common: 'Common', pizzeria: 'Pizzeria', cucina: 'Cucina' };
 const CHIPS      = ['½'];
@@ -21,7 +22,24 @@ let _state = {
 };
 
 export function init() {
-  _state.date = todayISO();
+  // Only restore draft when state is truly empty (first load / after full save)
+  const hasInMemory = Object.keys(_state.quantities).length > 0 ||
+                      _state.customItems.length > 0 ||
+                      Object.keys(_state.customOverrides).length > 0;
+  if (!hasInMemory) {
+    const draft = getDraft();
+    if (draft) {
+      _state.supplier        = draft.supplier        || 'cfs';
+      _state.date            = draft.date            || todayISO();
+      _state.quantities      = draft.quantities      || {};
+      _state.customItems     = draft.customItems     || [];
+      _state.categoryFilter  = draft.categoryFilter  || 'all';
+      _state.customOverrides = draft.customOverrides || {};
+      _state.expandedCustom  = new Set(draft.expandedCustom || []);
+    } else {
+      _state.date = todayISO();
+    }
+  }
 }
 
 export function render(container) {
@@ -317,6 +335,7 @@ function _saveCurrentOrder() {
     showToast('Enter at least one quantity before saving', 'warning');
     return;
   }
+  _persistDraft(); // update draft to reflect the now-cleared supplier state
   vibrate(15);
   window.dispatchEvent(new CustomEvent('navigate', {
     detail: { screen: 'output', orderIds: [order.id] }
@@ -333,6 +352,7 @@ async function _saveAllOrders() {
     showToast('Enter quantities in at least one tab first', 'warning');
     return;
   }
+  clearDraft(); // everything saved — wipe draft entirely
   vibrate(15);
   window.dispatchEvent(new CustomEvent('navigate', {
     detail: { screen: 'output', orderIds: saved.map(o => o.id) }
@@ -353,16 +373,19 @@ function _attachEvents(container) {
 
     if (action === 'switch-supplier') {
       _state.supplier = el.dataset.supplier;
+      _persistDraft();
       render(container);
       return;
     }
     if (action === 'cat-filter') {
       _state.categoryFilter = el.dataset.cat;
+      _persistDraft();
       render(container);
       return;
     }
     if (action === 'copy-last') {
       _copyLastOrder();
+      _persistDraft();
       render(container);
       return;
     }
@@ -380,6 +403,7 @@ function _attachEvents(container) {
     }
     if (action === 'remove-custom') {
       _state.customItems = _state.customItems.filter(c => c.id !== el.dataset.ciId);
+      _persistDraft();
       render(container);
       return;
     }
@@ -417,6 +441,7 @@ function _attachEvents(container) {
           streakBadge.textContent = '⚠ 2 in a row';
         }
       }
+      _persistDraft();
       vibrate(6);
       return;
     }
@@ -459,12 +484,14 @@ function _attachEvents(container) {
         el.classList.remove('bg-surface', 'text-muted', 'border-border');
         card.classList.add('ring-1', 'ring-brand');
       }
+      _persistDraft();
       return;
     }
   }, { signal });
 
   container.querySelector('#order-date')?.addEventListener('change', e => {
     _state.date = e.target.value;
+    _persistDraft();
   }, { signal });
 
   // Search — live filter without re-render
@@ -572,6 +599,7 @@ function _attachEvents(container) {
     if (el.dataset.action === 'custom-qty-input') {
       _state.customOverrides[el.dataset.itemId] = el.value;
     }
+    _scheduleDraftSave();
   }, { signal });
 }
 
@@ -603,6 +631,7 @@ function _saveCustomItem(container) {
     addToCatalog,
     supplier:     _state.supplier,
   });
+  _persistDraft();
 
   if (addToCatalog) {
     const cat = getCatalog();
@@ -619,6 +648,23 @@ function _saveCustomItem(container) {
   }
 
   render(container);
+}
+
+function _scheduleDraftSave() {
+  clearTimeout(_draftTimer);
+  _draftTimer = setTimeout(_persistDraft, 400);
+}
+
+function _persistDraft() {
+  saveDraft({
+    supplier:        _state.supplier,
+    date:            _state.date,
+    quantities:      { ..._state.quantities },
+    customItems:     [..._state.customItems],
+    categoryFilter:  _state.categoryFilter,
+    customOverrides: { ..._state.customOverrides },
+    expandedCustom:  [..._state.expandedCustom],
+  });
 }
 
 function _hasAnyFilledForSupplier(supplier) {

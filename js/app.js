@@ -7,7 +7,7 @@ import * as Tracking from './screens/tracking.js';
 import * as Stats    from './screens/stats.js';
 import * as Backup   from './screens/backup.js';
 import * as Catalog  from './screens/catalog.js';
-import { getData }   from './data.js';
+import { initData } from './data.js';
 import { todayISO }  from './utils.js';
 
 // Screen registry — maps screen name → { module, container, navId }
@@ -25,7 +25,7 @@ let _current = 'new-order';
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   // Update date in header
   _updateHeaderDate();
 
@@ -34,8 +34,8 @@ document.addEventListener('DOMContentLoaded', () => {
     navigator.serviceWorker.register('./sw.js').catch(console.warn);
   }
 
-  // Ensure data is initialised
-  getData();
+  // Load data from IndexedDB (migrates from localStorage on first run)
+  await initData();
 
   // Listen for programmatic navigation events (from screen modules)
   window.addEventListener('navigate', e => {
